@@ -1,0 +1,78 @@
+name: CI/CD
+
+# Runs automatically on every push and pull request to main
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:   # lets you run it manually from the Actions tab
+
+jobs:
+  lint:
+    name: Code style check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install flake8
+      - name: Run flake8
+        run: flake8 . --max-line-length=120 --exclude=.git,__pycache__
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    needs: lint
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install MQTT broker (Mosquitto)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mosquitto
+          sudo systemctl stop mosquitto || true
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Run unit + integration tests
+        run: pytest -v
+
+  deploy:
+    name: Deploy cloud server to Render
+    runs-on: ubuntu-latest
+    needs: test
+    # Only deploy when code is pushed to main (not on pull requests)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Trigger Render deploy
+        env:
+          DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$DEPLOY_HOOK" ]; then
+            echo "RENDER_DEPLOY_HOOK_URL secret is not set - skipping deploy"
+            exit 1
+          fi
+          curl --fail --silent --show-error -X POST "$DEPLOY_HOOK"
+          echo "Deploy triggered"
+
+      - name: Wait until the live server answers /health
+        env:
+          CLOUD_BASE_URL: ${{ secrets.CLOUD_BASE_URL }}
+        run: |
+          for i in $(seq 1 30); do
+            if curl --fail --silent --max-time 20 "$CLOUD_BASE_URL/health" | grep -q "ok"; then
+              echo "Server is live: $CLOUD_BASE_URL"
+              exit 0
+            fi
+            echo "Attempt $i: not ready yet, waiting 15 s..."
+            sleep 15
+          done
+          echo "Server did not become healthy in time"
+          exit 1
