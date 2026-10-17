@@ -1,0 +1,8 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "records": { ".read": true, ".write": "auth != null" },
+    "stats": { ".read": true, ".write": "auth != null" }
+  }
+}

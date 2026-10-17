@@ -17,6 +17,7 @@ import urllib.request
 import paho.mqtt.client as mqtt
 
 import config as cfg
+from firebase_client import FirebaseClient
 
 # Latest telemetry per UAV, and the buffer waiting to be sent to the cloud
 latest = {}
@@ -73,6 +74,26 @@ def on_message(client, userdata, msg):
         print(f"[edge] {uav_id} sensor={data['crowd']} -> command={command}")
 
 
+_firebase = None
+
+
+def send_to_cloud(batch):
+    """Send one batch to the cloud. Raises an exception if it fails."""
+    global _firebase
+    if cfg.FIREBASE_DB_URL:                       # Firebase backend (free, no server)
+        if _firebase is None:
+            _firebase = FirebaseClient(cfg.FIREBASE_DB_URL, cfg.FIREBASE_API_KEY,
+                                       cfg.FIREBASE_EMAIL, cfg.FIREBASE_PASSWORD)
+        _firebase.send_batch(batch)
+        return "Firebase"
+    req = urllib.request.Request(                 # plain HTTP cloud server (cloud_node.py)
+        cfg.CLOUD_URL, data=json.dumps(batch).encode(),
+        headers={"Content-Type": "application/json", "X-API-Key": cfg.CLOUD_API_KEY},
+        method="POST")
+    with urllib.request.urlopen(req, timeout=90) as resp:
+        return f"HTTP {resp.status}"
+
+
 def forward_to_cloud():
     """Every CLOUD_BATCH_PERIOD_S seconds, send buffered data to the cloud."""
     while True:
@@ -82,16 +103,11 @@ def forward_to_cloud():
         if not batch:
             continue
         try:
-            req = urllib.request.Request(
-                cfg.CLOUD_URL, data=json.dumps(batch).encode(),
-                headers={"Content-Type": "application/json",
-                         "X-API-Key": cfg.CLOUD_API_KEY}, method="POST")
-            # long timeout: a free hosting service needs ~1 min to wake up
-            with urllib.request.urlopen(req, timeout=90) as resp:
-                print(f"[edge] sent {len(batch)} records to cloud (HTTP {resp.status})")
+            how = send_to_cloud(batch)
+            print(f"[edge] sent {len(batch)} records to cloud ({how})")
         except Exception as e:
             # Cloud unreachable: keep the data and retry in the next round
-            print(f"[edge] cloud unreachable ({e}); keeping {len(batch)} records")
+            print(f"[edge] cloud error ({e}); keeping {len(batch)} records")
             with buffer_lock:
                 buffer[:0] = batch
 

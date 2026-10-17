@@ -20,6 +20,10 @@ jobs:
       - run: pip install flake8
       - name: Run flake8
         run: flake8 . --max-line-length=120 --exclude=.git,__pycache__
+      - name: Check the Firebase JSON files are valid
+        run: |
+          python -m json.tool firebase.json > /dev/null
+          python -m json.tool database.rules.json > /dev/null
 
   test:
     name: Tests (Python ${{ matrix.python-version }})
@@ -45,34 +49,42 @@ jobs:
         run: pytest -v
 
   deploy:
-    name: Deploy cloud server to Render
+    name: Deploy dashboard to Firebase Hosting
     runs-on: ubuntu-latest
     needs: test
     # Only deploy when code is pushed to main (not on pull requests)
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-      - name: Trigger Render deploy
+      - uses: actions/checkout@v4
+
+      - name: Write the dashboard config (database URL)
         env:
-          DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          DB_URL: ${{ secrets.FIREBASE_DB_URL }}
         run: |
-          if [ -z "$DEPLOY_HOOK" ]; then
-            echo "RENDER_DEPLOY_HOOK_URL secret is not set - skipping deploy"
+          if [ -z "$DB_URL" ]; then
+            echo "FIREBASE_DB_URL secret is not set"
             exit 1
           fi
-          curl --fail --silent --show-error -X POST "$DEPLOY_HOOK"
-          echo "Deploy triggered"
+          printf 'window.FIREBASE_DB_URL = "%s";\n' "$DB_URL" > public/firebase-config.js
 
-      - name: Wait until the live server answers /health
+      - name: Deploy to Firebase Hosting
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          projectId: ${{ secrets.FIREBASE_PROJECT_ID }}
+          channelId: live
+
+      - name: Check that the live dashboard answers
         env:
-          CLOUD_BASE_URL: ${{ secrets.CLOUD_BASE_URL }}
+          PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
         run: |
-          for i in $(seq 1 30); do
-            if curl --fail --silent --max-time 20 "$CLOUD_BASE_URL/health" | grep -q "ok"; then
-              echo "Server is live: $CLOUD_BASE_URL"
+          for i in $(seq 1 10); do
+            if curl --fail --silent --max-time 20 "https://$PROJECT_ID.web.app/" | grep -q "UAV cloud dashboard"; then
+              echo "Dashboard is live: https://$PROJECT_ID.web.app/"
               exit 0
             fi
-            echo "Attempt $i: not ready yet, waiting 15 s..."
-            sleep 15
+            echo "Attempt $i: not ready yet, waiting 10 s..."
+            sleep 10
           done
-          echo "Server did not become healthy in time"
+          echo "Dashboard did not answer in time"
           exit 1

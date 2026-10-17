@@ -54,6 +54,32 @@ Received data is stored in `cloud_data.jsonl`.
 - **Real devices**: set `BROKER_HOST` in `config.py` to the edge server's IP address.
 - **Simulation team**: have the simulator publish to the same topics instead of `uav_node.py`.
 
+## Real cloud with Firebase (free Spark plan, no payment method)
+
+The free plan has no server code (Cloud Functions need a paid plan), so the cloud is
+**Firebase Realtime Database + Firebase Hosting**:
+
+```
+Edge (edge_node.py) --HTTPS, signed in--> Firebase Realtime Database <--reads-- Dashboard (Firebase Hosting)
+```
+
+- `firebase_client.py` signs in with an email/password and writes each batch with the database REST API.
+- `database.rules.json`: anyone can read, only the signed-in edge user can write.
+- `public/index.html` is the dashboard (public URL `https://<project-id>.web.app`).
+- GitHub Actions: lint -> tests -> deploy the dashboard to Firebase Hosting -> check it answers.
+
+Run the edge against Firebase (Windows cmd):
+
+    set FIREBASE_DB_URL=https://<project>-default-rtdb.<region>.firebasedatabase.app
+    set FIREBASE_API_KEY=<Web API key>
+    set FIREBASE_EMAIL=edge@uav.local
+    set FIREBASE_PASSWORD=<password>
+    python edge_node.py
+
+GitHub secrets needed: `FIREBASE_SERVICE_ACCOUNT` (JSON key), `FIREBASE_PROJECT_ID`, `FIREBASE_DB_URL`.
+
+Without the `FIREBASE_*` variables the edge sends to `cloud_node.py` over HTTP (local mode).
+
 ## Automated testing with GitHub Actions
 
 Every push / pull request to `main` triggers `.github/workflows/ci.yml`, which:
@@ -71,24 +97,3 @@ pip install pytest flake8
 flake8 . --max-line-length=120
 pytest -v
 ```
-
-## Real cloud server (Render) + automatic deploy
-
-- `cloud_node.py` is a web server. Hosted on Render it gets a public URL such as
-  `https://uav-cloud.onrender.com` with a dashboard at `/`, JSON at `/data`, health check at `/health`.
-- The edge sends data to it over HTTPS with a secret `X-API-Key`.
-- On every push to `main`, GitHub Actions runs lint -> tests -> **deploy** (calls Render's deploy hook)
-  -> checks that `/health` answers.
-
-Render settings: Build `pip install -r requirements.txt`, Start `python cloud_node.py`,
-env var `CLOUD_API_KEY=<your secret>`, Auto-Deploy **Off**.
-GitHub secrets: `RENDER_DEPLOY_HOOK_URL`, `CLOUD_BASE_URL` (e.g. `https://uav-cloud.onrender.com`).
-
-Run the edge against the live cloud (Windows cmd):
-
-    set CLOUD_URL=https://uav-cloud.onrender.com/ingest
-    set CLOUD_API_KEY=<your secret>
-    python edge_node.py
-
-Note: Render's free plan sleeps after 15 min idle (first request takes ~1 min) and its disk is temporary,
-so the live data is kept in memory and shown on the dashboard.

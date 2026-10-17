@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UAV cloud dashboard</title>
+<style>
+:root{--bg:#f7f8f6;--card:#fff;--ink:#16211f;--muted:#5d6b68;--line:#d9dfdc;--accent:#0b7a6b;--warn:#b3402a}
+@media (prefers-color-scheme:dark){:root{--bg:#101615;--card:#18201f;--ink:#e6eeec;--muted:#93a39f;--line:#2b3735;--accent:#4fd1bd;--warn:#ff8a70}}
+*{box-sizing:border-box}
+body{margin:0;padding:1.5rem;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:60rem;margin:0 auto}
+h1{font-size:1.6rem;margin:0 0 .25rem}
+#status{color:var(--muted);margin:0 0 1.25rem}
+#status.err{color:var(--warn)}
+.stats{display:flex;flex-wrap:wrap;gap:.75rem;margin-bottom:1.25rem}
+.stat{flex:1 1 8rem;padding:.75rem 1rem;background:var(--card);border:1px solid var(--line);border-radius:6px}
+.stat b{display:block;font-size:1.8rem;line-height:1.1;color:var(--accent)}
+.stat span{color:var(--muted);font-size:.9rem}
+.wrap{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:6px}
+table{border-collapse:collapse;width:100%}
+th,td{padding:.45rem .75rem;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:600;color:var(--muted);font-size:.9rem}
+td.data{font:13px/1.4 ui-monospace,Consolas,monospace;word-break:break-word}
+tr:last-child td{border-bottom:0}
+</style>
+</head>
+<body>
+<main>
+<h1>UAV cloud dashboard</h1>
+<p id="status">Loading…</p>
+<div class="stats">
+  <div class="stat"><b id="s-total">–</b><span>records received</span></div>
+  <div class="stat"><b id="s-telemetry">–</b><span>telemetry</span></div>
+  <div class="stat"><b id="s-sensor">–</b><span>sensor (crowd)</span></div>
+  <div class="stat"><b id="s-batches">–</b><span>batches from the edge</span></div>
+</div>
+<div class="wrap"><table>
+  <thead><tr><th>Type</th><th>UAV</th><th>Data</th></tr></thead>
+  <tbody id="rows"><tr><td colspan="3">No data yet.</td></tr></tbody>
+</table></div>
+</main>
+<script src="firebase-config.js"></script>
+<script>
+const DB = (window.FIREBASE_DB_URL || "").replace(/\/+$/, "");
+const $ = id => document.getElementById(id);
+
+async function getJson(path, query) {
+  const res = await fetch(DB + "/" + path + ".json" + (query || ""));
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+
+async function refresh() {
+  const status = $("status");
+  if (!DB) { status.className = "err"; status.textContent = "The database URL is not set. Add the FIREBASE_DB_URL secret in GitHub and push again."; return; }
+  try {
+    const q = "?orderBy=" + encodeURIComponent('"$key"') + "&limitToLast=60";
+    const [stats, recs] = await Promise.all([getJson("stats"), getJson("records", q)]);
+    const s = stats || {};
+    for (const k of ["total", "telemetry", "sensor", "batches"]) $("s-" + k).textContent = s[k] ?? 0;
+
+    const keys = Object.keys(recs || {}).sort().reverse().slice(0, 20);
+    const tbody = $("rows");
+    tbody.textContent = "";
+    if (!keys.length) tbody.innerHTML = '<tr><td colspan="3">No data yet. Start the edge server.</td></tr>';
+    for (const k of keys) {
+      const { type, uav_id, ...rest } = recs[k];
+      const tr = document.createElement("tr");
+      for (const [text, cls] of [[type, ""], [uav_id, ""], [JSON.stringify(rest), "data"]]) {
+        const td = document.createElement("td");
+        td.className = cls; td.textContent = text ?? ""; tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+    status.className = "";
+    status.textContent = s.last_update ? "Last batch received " + new Date(s.last_update).toLocaleTimeString() + ". Refreshes every 5 seconds." : "Connected. Waiting for the first batch.";
+  } catch (e) {
+    status.className = "err";
+    status.textContent = "Could not read the database (" + e.message + "). Check the URL and the Rules.";
+  }
+}
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
