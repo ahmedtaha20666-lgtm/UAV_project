@@ -28,6 +28,7 @@ import json
 import os
 import re
 import sys
+import time
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -39,8 +40,12 @@ MAX_RECORDS = 2000
 ALLOWED_TYPES = ("telemetry", "sensor")
 BAD_KEY_CHARS = re.compile(r"[.$#\[\]/]")      # characters Firebase does not allow in keys
 
+PAUSE_AFTER_LOGIN_FAILURE_S = 60   # do not hammer Firebase Authentication after a failed sign-in
+
 _client = None
 _client_cfg = None
+_paused_until = 0.0
+_last_login_error = ""
 
 
 def get_client():
@@ -131,13 +136,24 @@ class handler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError) as e:
             return self._send(400, {"error": str(e)})
 
-        # 3) store in Firebase
+        # 3) store in Firebase (but pause for a while after a failed sign-in, so Firebase
+        #    Authentication does not block this server for "too many attempts")
+        global _paused_until, _last_login_error
+        wait = _paused_until - time.time()
+        if wait > 0:
+            return self._send(502, {"error": f"Firebase sign-in failed recently, pausing {wait:.0f} s "
+                                             f"before trying again. Last error: {_last_login_error}"})
         try:
             stored = get_client().send_batch(batch, reload_stats=True)
         except RuntimeError as e:
+            if "sign-in failed" in str(e):
+                _paused_until = time.time() + PAUSE_AFTER_LOGIN_FAILURE_S
+                _last_login_error = str(e)
             code = 500 if "not configured" in str(e) else 502
+            print(f"[ingest] {code}: {e}", file=sys.stderr)       # visible in the Vercel logs
             return self._send(code, {"error": str(e)})
         except Exception as e:                      # network problem, timeout, ...
+            print(f"[ingest] 502: could not reach Firebase: {e}", file=sys.stderr)
             return self._send(502, {"error": f"could not reach Firebase: {e}"})
         self._send(200, {"stored": stored})
 

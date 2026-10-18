@@ -12,6 +12,7 @@ Run:  python edge_node.py
 import json
 import threading
 import time
+import urllib.error
 import urllib.request
 
 import paho.mqtt.client as mqtt
@@ -23,6 +24,9 @@ from firebase_client import FirebaseClient
 latest = {}
 buffer = []
 buffer_lock = threading.Lock()
+MAX_BATCH = 500        # records per upload (the cloud server accepts at most 2000)
+MAX_BUFFER = 20000     # never keep more than this many unsent records (oldest are dropped)
+MAX_BACKOFF_S = 300    # wait at most 5 minutes between attempts while the cloud is failing
 
 # Direction vectors for each zone of the stadium (x, y)
 ZONE_DIRECTION = {"north": (0, 1), "south": (0, -1), "east": (1, 0), "west": (-1, 0)}
@@ -63,12 +67,10 @@ def on_message(client, userdata, msg):
 
     if kind == "telemetry":
         latest[uav_id] = data
-        with buffer_lock:
-            buffer.append({"type": "telemetry", **data})
+        add_to_buffer({"type": "telemetry", **data})
 
     elif kind == "sensor":
-        with buffer_lock:
-            buffer.append({"type": "sensor", **data})
+        add_to_buffer({"type": "sensor", **data})
         command = decide(uav_id, data)
         client.publish(cfg.TOPIC_COMMAND.format(uav_id=uav_id), json.dumps(command), qos=1)
         print(f"[edge] {uav_id} sensor={data['crowd']} -> command={command}")
@@ -90,26 +92,58 @@ def send_to_cloud(batch):
         cfg.CLOUD_URL, data=json.dumps(batch).encode(),
         headers={"Content-Type": "application/json", "X-API-Key": cfg.CLOUD_API_KEY},
         method="POST")
-    with urllib.request.urlopen(req, timeout=90) as resp:
-        return f"HTTP {resp.status}"
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            return f"HTTP {resp.status}"
+    except urllib.error.HTTPError as e:           # show WHY the server refused
+        try:
+            reason = json.loads(e.read()).get("error", "")
+        except Exception:
+            reason = ""
+        raise RuntimeError(f"HTTP {e.code}: {reason or e.reason}") from None
+
+
+def add_to_buffer(record):
+    with buffer_lock:
+        buffer.append(record)
+        if len(buffer) > MAX_BUFFER:
+            del buffer[:len(buffer) - MAX_BUFFER]
+
+
+def next_delay(failures):
+    """Seconds to wait before the next upload: normal rate, then slower after each failure."""
+    if failures == 0:
+        return cfg.CLOUD_BATCH_PERIOD_S
+    return min(cfg.CLOUD_BATCH_PERIOD_S * 2 ** failures, MAX_BACKOFF_S)
+
+
+def flush_buffer():
+    """Send everything in the buffer in chunks. Raises on error; unsent records stay in the buffer."""
+    sent = 0
+    while True:
+        with buffer_lock:
+            batch = buffer[:MAX_BATCH]
+        if not batch:
+            return sent
+        how = send_to_cloud(batch)
+        with buffer_lock:
+            del buffer[:len(batch)]               # remove only after the cloud accepted them
+        sent += len(batch)
+        print(f"[edge] sent {len(batch)} records to cloud ({how})")
 
 
 def forward_to_cloud():
-    """Every CLOUD_BATCH_PERIOD_S seconds, send buffered data to the cloud."""
+    """Upload the buffer regularly. After an error, wait longer each time (back-off)."""
+    failures = 0
     while True:
-        time.sleep(cfg.CLOUD_BATCH_PERIOD_S)
-        with buffer_lock:
-            batch, buffer[:] = list(buffer), []
-        if not batch:
-            continue
+        time.sleep(next_delay(failures))
         try:
-            how = send_to_cloud(batch)
-            print(f"[edge] sent {len(batch)} records to cloud ({how})")
+            flush_buffer()
+            failures = 0
         except Exception as e:
-            # Cloud unreachable: keep the data and retry in the next round
-            print(f"[edge] cloud error ({e}); keeping {len(batch)} records")
-            with buffer_lock:
-                buffer[:0] = batch
+            failures += 1
+            print(f"[edge] cloud error ({e}); keeping {len(buffer)} records, "
+                  f"next try in {next_delay(failures):.0f} s")
 
 
 def main():

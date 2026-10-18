@@ -31,6 +31,7 @@ def server(fake, monkeypatch):
                         "FIREBASE_EMAIL": EMAIL, "FIREBASE_PASSWORD": PASSWORD}.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(ingest, "_client", None)
+    monkeypatch.setattr(ingest, "_paused_until", 0.0)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), ingest.handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{srv.server_address[1]}/api/ingest"
@@ -129,5 +130,29 @@ def test_edge_keeps_data_when_server_rejects(server, monkeypatch):
     monkeypatch.setattr(config, "FIREBASE_DB_URL", "")
     monkeypatch.setattr(config, "CLOUD_URL", server)
     monkeypatch.setattr(config, "CLOUD_API_KEY", "wrong")
-    with pytest.raises(urllib.error.HTTPError):
+    with pytest.raises(RuntimeError, match="HTTP 401: invalid or missing API key"):
         edge_node.send_to_cloud(BATCH)                       # the edge then keeps the batch
+
+
+def test_edge_shows_why_firebase_login_failed(server, monkeypatch):
+    monkeypatch.setattr(config, "FIREBASE_DB_URL", "")
+    monkeypatch.setattr(config, "CLOUD_URL", server)
+    monkeypatch.setattr(config, "CLOUD_API_KEY", SECRET)
+    monkeypatch.setenv("FIREBASE_PASSWORD", "wrong")
+    with pytest.raises(RuntimeError, match="HTTP 502: .*Wrong email or password"):
+        edge_node.send_to_cloud(BATCH)
+
+
+def test_server_pauses_after_a_failed_sign_in(server, monkeypatch):
+    monkeypatch.setenv("FIREBASE_PASSWORD", "wrong")
+    assert status_of(server, BATCH) == 502
+    attempts = FakeFirebase.sign_ins
+    try:
+        post(server, BATCH)
+    except urllib.error.HTTPError as e:
+        assert e.code == 502
+        assert "pausing" in json.loads(e.read())["error"]
+    assert FakeFirebase.sign_ins == attempts                 # Firebase was NOT contacted again
+    monkeypatch.setenv("FIREBASE_PASSWORD", PASSWORD)
+    monkeypatch.setattr(ingest, "_paused_until", 0.0)        # the pause is over
+    assert status_of(server, BATCH) == 200

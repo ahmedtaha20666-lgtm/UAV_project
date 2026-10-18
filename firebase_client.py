@@ -25,6 +25,8 @@ HINTS = {
     "EMAIL_NOT_FOUND": "This user does not exist. Add it in Authentication -> Users.",
     "INVALID_PASSWORD": "Wrong password for this user.",
     "INVALID_LOGIN_CREDENTIALS": "Wrong email or password.",
+    "TOO_MANY_ATTEMPTS_TRY_LATER": "Firebase paused sign-ins after too many attempts. "
+                                   "Stop the programs, check the email/password/API key, then wait before retrying.",
     "API_KEY_INVALID": "The Web API key is wrong. Copy it from Project settings -> General.",
 }
 
