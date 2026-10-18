@@ -93,9 +93,13 @@ class FirebaseClient:
                                "Check the Realtime Database Rules.") from None
 
     # ------------------------------------------------------------------ API
-    def send_batch(self, batch):
-        """Store a list of records. Raises on any error (the edge then retries)."""
-        if self._stats is None:
+    def send_batch(self, batch, reload_stats=False):
+        """Store a list of records. Raises on any error (the caller then retries).
+
+        reload_stats=True re-reads the counters from the database every time.
+        A serverless server must use it, because several instances can run at once.
+        """
+        if self._stats is None or reload_stats:
             old = self._db("GET", "stats") or {}
             self._stats = {k: int(old.get(k, 0)) for k in ("total", "batches", "telemetry", "sensor")}
 

@@ -88,3 +88,23 @@ jobs:
           done
           echo "Dashboard did not answer in time"
           exit 1
+
+      - name: Check that the cloud server program answers (optional)
+        env:
+          CLOUD_API_URL: ${{ secrets.CLOUD_API_URL }}
+        run: |
+          if [ -z "$CLOUD_API_URL" ]; then
+            echo "CLOUD_API_URL secret is not set - skipping this check"
+            exit 0
+          fi
+          # Vercel deploys on its own after each push, so wait for the new version
+          for i in $(seq 1 12); do
+            if curl --fail --silent --max-time 20 "$CLOUD_API_URL/api/ingest" | grep -q "uav-ingest"; then
+              echo "Cloud server program is live: $CLOUD_API_URL/api/ingest"
+              exit 0
+            fi
+            echo "Attempt $i: not ready yet, waiting 10 s..."
+            sleep 10
+          done
+          echo "Cloud server program did not answer in time"
+          exit 1

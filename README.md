@@ -54,31 +54,38 @@ Received data is stored in `cloud_data.jsonl`.
 - **Real devices**: set `BROKER_HOST` in `config.py` to the edge server's IP address.
 - **Simulation team**: have the simulator publish to the same topics instead of `uav_node.py`.
 
-## Real cloud with Firebase (free Spark plan, no payment method)
-
-The free plan has no server code (Cloud Functions need a paid plan), so the cloud is
-**Firebase Realtime Database + Firebase Hosting**:
+## Cloud layer: server program + Firebase (free, no payment method)
 
 ```
-Edge (edge_node.py) --HTTPS, signed in--> Firebase Realtime Database <--reads-- Dashboard (Firebase Hosting)
+UAV -> MQTT -> Edge --HTTPS + API key--> Cloud server program (api/ingest.py, Vercel) --> Firebase Realtime Database <-- Dashboard (Firebase Hosting)
 ```
 
-- `firebase_client.py` signs in with an email/password and writes each batch with the database REST API.
-- `database.rules.json`: anyone can read, only the signed-in edge user can write.
-- `public/index.html` is the dashboard (public URL `https://<project-id>.web.app`).
-- GitHub Actions: lint -> tests -> deploy the dashboard to Firebase Hosting -> check it answers.
+- `api/ingest.py` is the **cloud server program**: it checks the API key, validates every record and
+  stores the batch in Firebase. The Firebase password lives only on this server (environment variables).
+- `firebase_client.py` signs in to Firebase (email/password) and writes with the database REST API.
+- `database.rules.json`: anyone can read, only the signed-in server user can write.
+- `public/index.html` is the dashboard (`https://<project-id>.web.app`, Firebase Hosting).
+- GitHub Actions: lint -> tests -> deploy the dashboard to Firebase Hosting -> check it answers
+  (and, if `CLOUD_API_URL` is set, check that the cloud server program answers).
+  Vercel deploys the server program by itself after every push (its GitHub integration).
 
-Run the edge against Firebase (Windows cmd):
+Vercel environment variables: `CLOUD_API_KEY`, `FIREBASE_DB_URL`, `FIREBASE_API_KEY`, `FIREBASE_EMAIL`, `FIREBASE_PASSWORD`.
 
-    set FIREBASE_DB_URL=https://<project>-default-rtdb.<region>.firebasedatabase.app
-    set FIREBASE_API_KEY=<Web API key>
-    set FIREBASE_EMAIL=edge@uav.local
-    set FIREBASE_PASSWORD=<password>
+Run the edge against the cloud server program (Windows cmd, in a fresh window):
+
+    set CLOUD_URL=https://<your-project>.vercel.app/api/ingest
+    set CLOUD_API_KEY=<the same secret as on Vercel>
     python edge_node.py
 
-GitHub secrets needed: `FIREBASE_SERVICE_ACCOUNT` (JSON key), `FIREBASE_PROJECT_ID`, `FIREBASE_DB_URL`.
+Run the same server program on your own computer instead (set the five variables first):
 
-Without the `FIREBASE_*` variables the edge sends to `cloud_node.py` over HTTP (local mode).
+    python run_cloud_local.py     (then CLOUD_URL=http://localhost:8000/api/ingest)
+
+Without a server, the edge can also write straight to Firebase: set the four `FIREBASE_*` variables
+instead of `CLOUD_URL`. `cloud_node.py` is a simple local-only server kept for testing.
+
+GitHub secrets: `FIREBASE_SERVICE_ACCOUNT` (JSON key), `FIREBASE_PROJECT_ID`, `FIREBASE_DB_URL`,
+and optionally `CLOUD_API_URL` (e.g. `https://<your-project>.vercel.app`).
 
 ## Automated testing with GitHub Actions
 
